@@ -1,1 +1,1 @@
-This is the notebook that relates to the GWAS data.
+These are the notebooks that relate to the GWAS data.
