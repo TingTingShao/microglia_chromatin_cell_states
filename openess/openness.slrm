@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --account="lp_alethea"
+#SBATCH --job-name="openness"
+#SBATCH --cluster="wice"
+#SBATCH --partition="batch"
+#SBATCH -N 1
+#SBATCH -n 72
+#SBATCH -t 12:00:00
+#SBATCH --mem=239G
+#SBATCH -o col_mean.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=tingting.shao@student.kuleuven.be
+
+source /data/leuven/351/vsc35107/miniconda3/etc/profile.d/conda.sh
+conda activate scenic2
+
+./openness.py
