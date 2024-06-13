@@ -1,0 +1,18 @@
+#!/bin/bash 
+#SBATCH --account="lp_alethea"
+#SBATCH --job-name="create GWAS bed"
+#SBATCH --cluster="wice"
+#SBATCH --partition="batch"
+#SBATCH -N 1
+#SBATCH -n 16
+#SBATCH -t 1:00:00
+#SBATCH --mem=50G
+
+source /data/leuven/351/vsc35107/miniconda3/etc/profile.d/conda.sh
+
+conda activate arches
+
+
+python create_gwas_bed_files.py \
+    --gwas /data/leuven/351/vsc35107/lustre1_stt/data/GWAS/GCST90027158_buildGRCh38.tsv.gz \
+    --pval_thresh 0.1 --out_prefix /data/leuven/351/vsc35107/lustre1_stt/data/GWAS/010results_bed/Bellenguez_etal_Stage1_results_pval0.1 --append

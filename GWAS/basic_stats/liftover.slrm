@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --account="lp_alethea"
+#SBATCH --job-name="liftover"
+#SBATCH --cluster="wice"
+#SBATCH --partition="batch"
+#SBATCH -N 1
+#SBATCH -n 72
+#SBATCH -t 5:00:00
+#SBATCH --mem=239G
+#SBATCH -o out/liftover.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=tingting.shao@student.kuleuven.be
+
+# liftover hg38 to hg19 before expansion
+
+ ./liftover /data/leuven/351/vsc35107/lustre1_stt/data/GWAS/010results_bed/Bellenguez_etal_Stage1_results_pval0.1.bed \
+     hg38Tohg19.over.chain.gz \
+     /data/leuven/351/vsc35107/lustre1_stt/data/GWAS/010results_bed/Bellenguez_etal_Stage1_results_pval0.1_hg19.bed \
+     /data/leuven/351/vsc35107/lustre1_stt/data/GWAS/010results_bed/Bellenguez_etal_Stage1_results_pval0.1_hg19_unlifted.bed
+
+
+# lift over hg19 to hg38 after expansion
+
+ awk 'NF == 6' /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_hg19.expanded.bed > /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_hg19.expanded_cleaned.bed
+
+ ./liftOver  -bedPlus=3 /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_hg19.expanded_cleaned.bed \
+     hg19ToHg38.over.chain.gz  \
+     /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_pval0.1_hg38_expanded.bed \
+     /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_pval0.1_hg38_expanded_unlifted.bed 
+
+

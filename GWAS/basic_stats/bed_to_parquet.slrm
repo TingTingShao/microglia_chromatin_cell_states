@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --account="lp_alethea"
+#SBATCH --job-name="bed_to_parquet"
+#SBATCH --cluster="wice"
+#SBATCH --partition="batch"
+#SBATCH -N 1
+#SBATCH -n 72
+#SBATCH -t 5:00:00
+#SBATCH --mem=239G
+#SBATCH -o out/bed_to_parquet.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=tingting.shao@student.kuleuven.be
+
+source /data/leuven/351/vsc35107/miniconda3/etc/profile.d/conda.sh
+conda activate master
+
+python bed_to_parquet.py --input_bed /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_hg38_unique.bed \
+      --output_parquet /lustre1/project/stg_00079/students/tingting/data/GWAS/020results_expansion/Bellenguez_etal_Stage1_result_hg38_unique.parquet
