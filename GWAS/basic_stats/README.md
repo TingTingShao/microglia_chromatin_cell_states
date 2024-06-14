@@ -4,7 +4,7 @@
   4. liftover (hg19 to hg38)
   5. bed_to_parquet
 
-There are relation: 
+There are relations: 
 
 __different lead but same buddies__ in this case, assigning p-value to the buddy snp would also overestimate the number of SNPs
 
