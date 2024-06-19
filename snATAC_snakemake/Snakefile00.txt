@@ -1,0 +1,118 @@
+configfile: "/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/08_replicate/config.yaml"
+
+import snapatac2 as snap
+import os
+import random
+import multiprocessing as mp
+import anndata
+import pandas as pd
+import pickle
+
+"""
+this job was isolated from others, becasue of the parameter leiden_mnc_, and resolution
+these two parameters need to be checked after the previous run: snakefile
+"""
+
+rule all:
+    input:
+        bed_paths_pkl=os.path.join(config["work_dir"], "030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bed_paths2.pkl"),
+        bw_paths_pkl=os.path.join(config["work_dir"], "030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bw_paths2.pkl"),     
+        tsv=os.path.join(config["work_dir"], "030results_cistopic/cell_data.tsv"),
+        frag_paths_pkl=os.path.join(config["work_dir"], "030results_cistopic/frag_paths.pkl"),
+        snap_umap=os.path.join(config["work_dir"], '030results_cistopic/snap_umap.pkl'),   
+        # png0=os.path.join(config["work_dir"], "030cluster/00.png"),
+        # png1=os.path.join(config["work_dir"], "030cluster/01.png"),
+        # png2=os.path.join(config["work_dir"], "030cluster/02.png"),
+        # png3=os.path.join(config["work_dir"], "030cluster/03.png"),
+
+rule export:
+    input:
+        adata=os.path.join(config["work_dir"],f"microglia.h5ad")
+    output:
+        bed_paths_pkl=os.path.join(config["work_dir"], "030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bed_paths2.pkl"),
+        bw_paths_pkl=os.path.join(config["work_dir"], "030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bw_paths2.pkl"),
+        flag=os.path.join(config["tmp_dir"], 'flags/export.done')
+    run:
+        import pickle
+        import anndata
+
+        adat=anndata.read_h5ad(input.adata)
+
+        bed_paths=snap.ex.export_fragments(adat, 
+            groupby=config['leiden_resolution'], 
+            out_dir=os.path.join(config['upstream_dir'], config["bed_path"]),
+            prefix='',
+            suffix='.fragments.tsv.gz'
+            )
+        bw_paths=snap.ex.export_coverage(adat,
+            groupby=config['leiden_resolution'],
+            out_dir=os.path.join(config['upstream_dir'], config["bigwig_path"]),
+            prefix=''
+        )
+        print(bed_paths)
+        pickle.dump(bed_paths,
+                    open(output.bed_paths_pkl, 'wb'))
+        pickle.dump(bw_paths,
+                open(output.bw_paths_pkl, 'wb'))     
+        with open(output.flag, 'w') as f:
+            pass  
+
+# rule cell_proportion:
+#     input:
+#         anndata=os.path.join(config["upstream_dir"],"microglia.h5ads"),
+#         flag=os.path.join(config["tmp_dir"], 'flags/export.done')
+#     output:
+#         png0=os.path.join(config['work_dir'], "030cluster/00.png"),
+#         png1=os.path.join(config['work_dir'], "030cluster/01.png"),
+#         png2=os.path.join(config['work_dir'], "030cluster/02.png"),
+#         png3=os.path.join(config['work_dir'], "030cluster/03.png"),
+#         flag=os.path.join(config["tmp_dir"], 'flags/cell_proportion.done')
+#     params:
+#         resolution=config["resolution"]
+#     # threads: 1
+#     shell:
+#         """
+#         touch {output.flag}
+#         /vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/workflow_new/rules/cell_proportion.py -a {input.anndata} -r {params.resolution} -o {output.png0} {output.png1} {output.png2} {output.png3}
+#         """
+
+rule generate_cell_data:
+    input:
+        adata=os.path.join(config["upstream_dir"], "microglia.h5ad"),
+        flag=os.path.join(config['tmp_dir'], 'flags/cell_proportion.done')
+    output:
+        tsv=os.path.join(config['work_dir'], "030results_cistopic/cell_data.tsv"),
+        frag_paths_pkl=os.path.join(config['work_dir'], "030results_cistopic/frag_paths.pkl"),
+        snap_umap=os.path.join(config['work_dir'], '030results_cistopic/snap_umap.pkl')
+    params:
+        data_dir=config["synapse_dir"]
+    run:
+        adat=anndata.read_h5ad(input.adata)
+        adat2=adat.copy()
+        adat2.obs['barcode']=[x.rsplit(":",1)[1]for x in adat2.obs.index]
+        cell_data=adat2.obs
+        cell_data['celltype'] = cell_data[config['leiden_resolution']].astype(str) 
+
+        fragments_dict={}
+        for filename in os.listdir(params.data_dir):
+            if filename.endswith('.fragments.tsv.gz') :
+                cell_id = filename.split('.')[0]
+                if cell_id in set(cell_data['sample']):
+                    frag_path=os.path.join(params.data_dir, filename)
+                    fragments_dict[cell_id] = frag_path
+
+        umap_data = pd.DataFrame(adat.obsm[config['x_umap']], columns=['UMAP_1', 'UMAP_2'], index=adat.obs.index)
+        new_index = []
+        for index in umap_data.index:
+            sample, cell = index.split(':')
+            new_index.append(f"{cell}___{sample}")
+        umap_data.index = new_index
+        print(umap_data.head())
+
+        pickle.dump(fragments_dict, open(output.frag_paths_pkl, 'wb'))   
+        pickle.dump(umap_data, open(output.snap_umap, 'wb'))           
+        cell_data.to_csv(output.tsv, sep = '\t', header = True, index = False)
+        
+# import shutil
+# onsuccess:
+#     shutil.rmtree(".snakemake")

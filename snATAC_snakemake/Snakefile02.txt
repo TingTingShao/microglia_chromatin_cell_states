@@ -1,0 +1,42 @@
+# configfile: "/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/snap2_pipeline/config.yaml"
+configfile: "/lustre1/project/stg_00079/students/tingting/data/sun/PMI/config.yaml"
+
+import os
+import pycisTopic
+import numpy as np
+import anndata
+import pyranges as pr
+import requests
+import pandas as pd
+import pickle
+from pycisTopic.pseudobulk_peak_calling import export_pseudobulk
+from pycisTopic.pseudobulk_peak_calling import peak_calling
+from pycisTopic.iterative_peak_calling import *
+import pybiomart as pbm
+from pycisTopic.qc import *
+import polars as pl
+from pycisTopic.cistopic_class import create_cistopic_object
+from pycisTopic.cistopic_class import *
+
+rule all:
+    input:
+        topic_pkl=os.path.join(config['work_dir'], "030results_cistopic/020models/models_500_iter_mallet.pkl")
+
+
+rule model_topics:
+    input:
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+    output:
+        topic_pkl=os.path.join(config['work_dir'], "030results_cistopic/020models/models_500_iter_mallet.pkl")
+    shell:
+        """
+        pycistopic topic_modeling mallet \
+            -i {input.obj_pkl} \
+            -o {output.topic_pkl} \
+            -t 2 5 10 20 30 40 45 50 55 60 65 70 80 90 100 \
+            -p 16 \
+            -b {config[mallet]} \
+            -T {config[tmp_dir]} \
+            -k True       
+        """
+

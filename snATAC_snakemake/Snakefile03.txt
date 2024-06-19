@@ -1,0 +1,338 @@
+configfile: "/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/workflow_new/config.yaml"
+
+import os
+import pycisTopic
+import numpy as np
+import anndata
+import pyranges as pr
+import requests
+import pandas as pd
+import pickle
+from pycisTopic.pseudobulk_peak_calling import export_pseudobulk
+from pycisTopic.pseudobulk_peak_calling import peak_calling
+from pycisTopic.iterative_peak_calling import *
+import pybiomart as pbm
+from pycisTopic.qc import *
+import polars as pl
+from pycisTopic.cistopic_class import create_cistopic_object
+from pycisTopic.cistopic_class import *
+
+chromsizes=pd.read_csv(config["target_url"], sep='\t', header=None)
+chromsizes.columns=['Chromosome', 'End']
+chromsizes['Start']=[0]*chromsizes.shape[0]
+chromsizes=chromsizes.loc[:,['Chromosome', 'Start', 'End']]
+# Exceptionally in this case, to agree with CellRangerARC annotations
+chromsizes['Chromosome'] = [chromsizes['Chromosome'][x].replace('v', '.') for x in range(len(chromsizes['Chromosome']))]
+chromsizes['Chromosome'] = [chromsizes['Chromosome'][x].split('_')[1] if len(chromsizes['Chromosome'][x].split('_')) > 1 else chromsizes['Chromosome'][x] for x in range(len(chromsizes['Chromosome']))]
+chromsizes=pr.PyRanges(chromsizes)
+
+
+rule all:
+    input:
+        variable_regions_pkl=os.path.join(config["work_dir"], '030results_cistopic/040dars/variable_regions.pkl'),
+        gene_act_pkl=os.path.join(config['work_dir'], '030results_cistopic/gene_act.pkl'),
+        weigths_pkl=os.path.join(config["work_dir"], '030results_cistopic/weigths.pkl')   
+
+rule add_model:
+    input:
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+        topic_pkl=os.path.join(config['work_dir'], "030results_cistopic/020models/models_500_iter_mallet.pkl")
+    output:
+        number_of_topics=os.path.join(config['work_dir'], '030results_cistopic/020models/number_of_topics.png'),
+        flag=os.path.join(config['tmp_dir'], 'flags/add_model.done')
+    run:
+        from pycisTopic.lda_models import evaluate_models
+        models = pickle.load(open(input.topic_pkl, 'rb'))
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+
+        # add model with 60 topics
+        model = evaluate_models(models,
+                        select_model=60,
+                        return_model=True,
+                        metrics=['Arun_2010','Cao_Juan_2009', 'Minmo_2011', 'loglikelihood'],
+                        plot_metrics=False,
+                        plot=True,
+                        save=output.number_of_topics                      
+                        )
+        cistopic_obj.add_LDA_model(model)
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+
+        with open(output.flag, 'w') as f:
+            pass          
+
+rule citopic_dr:
+    input:
+        flag=os.path.join(config['tmp_dir'], 'flags/add_model.done'),
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+    output:
+        png=os.path.join(config['work_dir'], '030results_cistopic/030visual/cistopic_dr.png'),
+        flag=os.path.join(config['tmp_dir'], 'flags/cistopic_dr.done'),
+    # threads:1
+    run:
+        # default_n_threads = 1
+        # os.environ['OPENBLAS_NUM_THREADS'] = f"{default_n_threads}"
+        # os.environ['MKL_NUM_THREADS'] = f"{default_n_threads}"
+        # os.environ['OMP_NUM_THREADS'] = f"{default_n_threads}"
+        from pycisTopic.clust_vis import (
+            find_clusters,
+            run_umap,
+            run_tsne,
+            plot_metadata,
+            plot_topic,
+            cell_topic_heatmap
+        )
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        find_clusters(
+            cistopic_obj,
+            target  = 'cell',
+            k = 10,
+            res = [0.3, 0.5, 0.8, 1.0],
+            prefix = 'pycisTopic_',
+            scale = True,
+            split_pattern = '-'
+        )
+        run_umap(
+            cistopic_obj,
+            target  = 'cell', scale=True)
+        run_tsne(
+            cistopic_obj,
+            target  = 'cell', scale=True)
+        plot_metadata(
+            cistopic_obj,
+            reduction_name='UMAP',
+            variables=['celltype', 'pycisTopic_leiden_10_0.3', 'pycisTopic_leiden_10_0.5', 'pycisTopic_leiden_10_0.8', 'pycisTopic_leiden_10_1.0'],
+            target='cell', num_columns=3,
+            text_size=10,
+            dot_size=5, save=output.png)
+        
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+
+        with open(output.flag, 'w') as f:
+            pass    
+
+rule topic_binary:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        flag=os.path.join(config['tmp_dir'], 'flags/cistopic_dr.done'),
+    output:
+        png_region_bin_topics=os.path.join(config["work_dir"], '030results_cistopic/030visual/bi_regions.png'),
+        png_cell_topics=os.path.join(config["work_dir"], '030results_cistopic/030visual/bi_cell.png'),
+
+        binarized_cell_topic=os.path.join(config["work_dir"], '030results_cistopic/030visual/binarized_cell_topic.pkl'),
+        region_bin_topics_top_3k=os.path.join(config["work_dir"], '030results_cistopic/030visual/region_bin_topics_top_3k.pkl'),
+
+        region_bin_topics_otsu=os.path.join(config["work_dir"], '030results_cistopic/030visual/region_bin_topics_otsu.pkl'),
+        png_region_bin_topics_otsu=os.path.join(config["work_dir"], '030results_cistopic/030visual/region_bin_topics_otsu.png'),
+        flag=os.path.join(config['tmp_dir'], 'flags/topic_binary.done'),
+    run:
+        from pycisTopic.topic_binarization import binarize_topics
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        region_bin_topics_top_3k = binarize_topics(
+            cistopic_obj, method='ntop', 
+            target='region', smooth_topics=True,
+            plot=True, ntop = 3_000,
+            num_columns=5,
+            save=output.png_region_bin_topics
+        )
+
+        binarized_cell_topic = binarize_topics(
+            cistopic_obj,
+            target='cell',
+            method='aucell',
+            plot=True,
+            num_columns=5, nbins=100,
+            save=output.png_cell_topics
+            )
+
+        region_bin_topics_otsu = binarize_topics(
+            cistopic_obj,
+            target='region',
+            method='otsu',
+            plot=True,
+            num_columns=5, nbins=100,
+            save=output.png_region_bin_topics_otsu
+            )
+
+        pickle.dump(region_bin_topics_top_3k,
+            open(output.region_bin_topics_top_3k, 'wb'))
+        pickle.dump(binarized_cell_topic,
+            open(output.binarized_cell_topic, 'wb'))   
+        pickle.dump(region_bin_topics_otsu,
+            open(output.region_bin_topics_otsu, 'wb'))
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+        with open(output.flag, 'w') as f:
+            pass      
+
+rule topics_qc:
+    input:
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+        flag=os.path.join(config['tmp_dir'], 'flags/topic_binary.done'),
+    output:
+        png_qc=os.path.join(config["work_dir"], '030results_cistopic/030visual/topics_qc.png'),
+        flag=os.path.join(config["tmp_dir"], 'flags/topic_qc.done'),
+    run:
+        from pycisTopic.topic_qc import compute_topic_metrics, plot_topic_qc, topic_annotation
+        import matplotlib.pyplot as plt
+        from pycisTopic.utils import fig2img
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+
+        topic_qc_metrics = compute_topic_metrics(cistopic_obj)
+        print(topic_qc_metrics.columns)
+
+        fig_dict={}
+        fig_dict['CoherenceVSAssignments']=plot_topic_qc(topic_qc_metrics, var_x='Coherence', var_y='Log10_Assignments', var_color='Gini_index', plot=False, return_fig=True)
+        fig_dict['AssignmentsVSCells_in_bin']=plot_topic_qc(topic_qc_metrics, var_x='Log10_Assignments', var_y='Cells_in_binarized_topic', var_color='Gini_index', plot=False, return_fig=True)
+        fig_dict['CoherenceVSCells_in_bin']=plot_topic_qc(topic_qc_metrics, var_x='Coherence', var_y='Cells_in_binarized_topic', var_color='Gini_index', plot=False, return_fig=True)
+        fig_dict['CoherenceVSRegions_in_bin']=plot_topic_qc(topic_qc_metrics, var_x='Coherence', var_y='Regions_in_binarized_topic', var_color='Gini_index', plot=False, return_fig=True)
+        fig_dict['CoherenceVSMarginal_dist']=plot_topic_qc(topic_qc_metrics, var_x='Coherence', var_y='Marginal_topic_dist', var_color='Gini_index', plot=False, return_fig=True)
+        fig_dict['CoherenceVSGini_index']=plot_topic_qc(topic_qc_metrics, var_x='Coherence', var_y='Gini_index', var_color='Gini_index', plot=False, return_fig=True)
+
+        fig=plt.figure(figsize=(40, 43))
+        i = 1
+        for fig_ in fig_dict.keys():
+            plt.subplot(2, 3, i)
+            img = fig2img(fig_dict[fig_]) #To convert figures to png to plot together, see .utils.py. This converts the figure to png.
+            plt.imshow(img)
+            plt.axis('off')
+            i += 1
+        plt.subplots_adjust(wspace=0, hspace=-0.70)
+        plt.savefig(output.png_qc, bbox_inches='tight', pad_inches=0.1, dpi=300)
+        with open(output.flag, 'w') as f:
+            pass     
+
+
+# caution: consume a lot of memory
+rule imputed_acc:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        flag=os.path.join(config['tmp_dir'], 'flags/topic_qc.done'),
+    output:
+        imputed_acc_obj=os.path.join(config["work_dir"], '030results_cistopic/040dars/imputed_acc_obj.pkl'),
+    run:
+        from pycisTopic.diff_features import impute_accessibility
+        import numpy as np
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        imputed_acc_obj = impute_accessibility(
+            cistopic_obj,
+            selected_cells=None, # A list with selected cells to impute accessibility for
+            selected_regions=None, # A list with selected regions to impute accessibility for
+            scale_factor=10**6 # A number to multiply the imputed values for. This is useful to convert low probabilities to 0, making the matrix more sparse. 
+        )
+        print(type(imputed_acc_obj))
+
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb')) 
+        pickle.dump(imputed_acc_obj,
+            open(output.imputed_acc_obj, 'wb'))   
+
+# caution: consume a lot of memory
+rule variable_regions:
+    input:
+        imputed_acc_obj=os.path.join(config["work_dir"], '030results_cistopic/040dars/imputed_acc_obj.pkl'),
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+    output:
+        variable_regions=os.path.join(config["work_dir"], '030results_cistopic/040dars/variable_regions.png'),
+        variable_regions_pkl=os.path.join(config["work_dir"], '030results_cistopic/040dars/variable_regions.pkl')
+    run:
+        from pycisTopic.diff_features import (
+            impute_accessibility,
+            normalize_scores,
+            find_highly_variable_features,
+            find_diff_features
+        )
+        import numpy as np
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        imputed_acc_obj=pickle.load(open(input.imputed_acc_obj, 'rb'))
+
+        """
+        Log-normalize imputation data. 
+        Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale_factor.
+        """
+        normalized_imputed_acc_obj = normalize_scores(imputed_acc_obj, scale_factor=10**4)
+        del imputed_acc_obj
+
+        """
+        Find highly variable features.
+        min_disp: Minimum dispersion value for a feature to be selected
+        min_mean: Minimum mean value for a feature to be selected.
+        max_disp: Maximum dispersion value for a feature to be selected.
+        n_bins: Number of bins for binning the mean gene expression. Normalization is done with respect to each bin. Default: 20 (not fully understand)
+        n_top_features: Number of highly-variable features to keep. If specifed, dispersion and mean thresholds will be ignored.
+        """
+        variable_regions = find_highly_variable_features(
+            normalized_imputed_acc_obj,
+            min_disp = 0.05,
+            min_mean = 0.0125,
+            max_mean = 3,
+            max_disp = np.inf,
+            n_bins=20,
+            n_top_features=None,
+            plot=True,
+            save=output.variable_regions
+        )
+        print(type(variable_regions))
+        pickle.dump(variable_regions,
+            open(output.variable_regions_pkl, 'wb'))         
+
+"""
+gene activity
+imputed_acc_obj
+pr_annotation: Transcription Start Site TSS ["Gene", "Chromosome", "Start"]
+"""
+rule gene_activity:
+    input:
+        imputed_acc_obj=os.path.join(config["work_dir"], '030results_cistopic/040dars/imputed_acc_obj.pkl'),
+        pr_annotation_pkl=config['pr_annotation'],
+        # flag=os.path.join(config['tmp_dir'], 'flags/plot_features.done'),
+    output:
+        gene_act_pkl=os.path.join(config['work_dir'], '030results_cistopic/gene_act.pkl'),
+        weigths_pkl=os.path.join(config["work_dir"], '030results_cistopic/weigths.pkl')
+    run:
+        from pycisTopic.gene_activity import get_gene_activity
+        imputed_acc_obj=pickle.load(open(input.imputed_acc_obj, 'rb'))
+        pr_annotation=pickle.load(open(input.pr_annotation_pkl, 'rb'))
+
+        gene_act, weigths = get_gene_activity(
+            imputed_acc_obj,
+            pr_annotation,
+            chromsizes,
+            use_gene_boundaries=True, # Whether to use the whole search space or stop when encountering another gene
+            upstream=[1000, 100000], # Search space upstream. The minimum means that even if there is a gene right next to it
+                                    # these bp will be taken (1kbp here)
+            downstream=[1000,100000], # Search space downstream
+            distance_weight=True, # Whether to add a distance weight (an exponential function, the weight will decrease with distance)
+            decay_rate=1, # Exponent for the distance exponential funciton (the higher the faster will be the decrease)
+            extend_gene_body_upstream=10000, # Number of bp upstream immune to the distance weight (their value will be maximum for
+                                #this weight)
+            extend_gene_body_downstream=500, # Number of bp downstream immune to the distance weight
+            gene_size_weight=False, # Whether to add a weights based on the length of the gene
+            gene_size_scale_factor='median', # Dividend to calculate the gene size weigth. Default is the median value of all genes
+                                #in the genome
+            remove_promoters=False, # Whether to remove promoters when computing gene activity scores
+            average_scores=True, # Whether to divide by the total number of region assigned to a gene when calculating the gene
+                                #activity score
+            scale_factor=1, # Value to multiply for the final gene activity matrix
+            extend_tss=[10,10], # Space to consider a promoter
+            gini_weight = True, # Whether to add a gini index weigth. The more unique the region is, the higher this weight will be
+            return_weights= True, # Whether to return the final weights
+            project='Gene_activity') # Project name for the gene activity object
+        print('gene act')
+        print(gene_act)
+        print('gene weights')
+        print(weigths)
+
+        pickle.dump(gene_act,
+            open(output.gene_act_pkl, 'wb'))    
+        pickle.dump(weigths,
+            open(output.weigths_pkl, 'wb'))     
+
+# import shutil
+# onsuccess:
+#     shutil.rmtree(".snakemake")
+    

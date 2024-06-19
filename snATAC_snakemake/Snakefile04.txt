@@ -1,0 +1,135 @@
+configfile: "/lustre1/project/stg_00079/students/tingting/data/sun/PMI/config.yaml"
+import duckdb as db
+import pickle
+import os
+import pandas as pd
+import anndata as ad
+import numpy as np
+from scipy.sparse import csr_matrix
+# import snapatac2 as snap 
+import scanpy as sc
+from scipy import io
+
+# env scenicplus
+
+rule all:
+    input:
+        # feature_cell_tsv=os.path.join(config["dir_path"], 'feature_cell.tsv'),
+        # part_feature_cell_tsv=os.path.join(config["dir_path"], '3000feature_cell.tsv'),
+        gene_act_h5ad=os.path.join(config["dir_path"], '030results_cistopic/cell_gene03.h5ad'),
+        flag1='/lustre1/scratch/351/vsc35107/flags/clustering_gene_act.done',
+        png=os.path.join(config["dir_path"], 'exploratory/jaccard.png'),
+        flag2='/lustre1/scratch/351/vsc35107/flags/plot_imputed_features_nicol_genes.done',
+      
+# rule export_tsv:
+#     input:
+#         gene_act=os.path.join(config["dir_path"], '030results_cistopic/gene_act.pkl')
+#     output:
+#         feature_cell_tsv=os.path.join(config["dir_path"], 'feature_cell.tsv'),
+#         part_feature_cell_tsv=os.path.join(config["dir_path"], '3000feature_cell.tsv')
+#     shell:
+#         """
+#         /data/leuven/351/vsc35107/master_thesis/workflow_new/rules/export_tsv.py -a {input.gene_act} -o {output.feature_cell_tsv} {output.part_feature_cell_tsv}
+#         """
+
+
+rule export_h5ad:
+    input:
+        gene_act=os.path.join(config["work_dir"], '030results_cistopic/gene_act.pkl')
+    output:
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene01.h5ad')
+    shell:
+        """
+        /data/leuven/351/vsc35107/master_thesis/workflow_new/rules/export_h5ad.py -a {input.gene_act} -o {output.gene_act_h5ad}
+        """
+
+rule add_metadata:
+    input:
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene01.h5ad'),
+        microglia=os.path.join(config["upstream_dir"], 'microglia_1.h5ad')
+    output:
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene02.h5ad')
+    shell:
+        """
+        /data/leuven/351/vsc35107/master_thesis/workflow_new/rules/add_metadata.py -a {input.gene_act_h5ad} {input.microglia} -o {output.gene_act_h5ad}
+        """
+
+rule select_features:
+    input:
+         gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene02.h5ad'),
+        #  DAG_markers=os.path.join(config["dir_path"], '030results_cistopic/040dars/DAG_markers_dict.pkl')
+         DAG_markers=os.path.join(config["work_dir"], f'030results_cistopic/040dars/DAG_markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+    output:
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene03.h5ad'),
+    run:
+        marker_gene_cluster=pickle.load(open(input.DAG_markers, 'rb'))
+        cell_gene=ad.read_h5ad(input.gene_act_h5ad)
+        os.makedirs(os.path.join(config['work_dir'], "exploratory"), exist_ok = True)
+
+        combined_indices = [index for df in marker_gene_cluster.values() for index in df.index.unique()]
+        combined_index_series = pd.Series(combined_indices)
+        cell_gene = cell_gene[:, combined_index_series]
+        cell_gene.var_names_make_unique()
+        cell_gene.var_names_make_unique()
+        sc.pp.neighbors(cell_gene, use_rep='X')
+        sc.tl.umap(cell_gene)
+        sc.pl.umap(cell_gene, color=config["snakefile03"]["variable"], save=f'gene_act_atac_config["snakefile03"]["variable"].png')
+        cell_gene.write(output.gene_act_h5ad, compression="gzip")
+
+rule clustering:
+    input:
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene03.h5ad'),
+    output:
+        flag='/lustre1/scratch/351/vsc35107/flags/clustering_gene_act.done',
+        gene_act_h5ad=os.path.join(config["work_dir"], '030results_cistopic/cell_gene04.h5ad'),
+    run:
+        cell_gene=ad.read_h5ad(input.gene_act_h5ad)
+        sc.tl.leiden(cell_gene)
+        sc.tl.leiden(cell_gene, key_added="gene_act_leiden_res0_3", resolution=0.3)
+        sc.tl.leiden(cell_gene, key_added="gene_act_leiden_res0_5", resolution=0.5)
+        sc.tl.leiden(cell_gene, key_added="gene_act_leiden_res0_8", resolution=0.8)
+        sc.pl.umap(
+            cell_gene,
+            color=["gene_act_leiden_res0_3", "gene_act_leiden_res0_5", "gene_act_leiden_res0_8"],
+            legend_loc="on data",
+            save='gene_act_clustering.png'
+        )
+
+        cell_gene.write(output.gene_act_h5ad, compression="gzip")
+
+        with open(output.flag, 'w') as f:
+            pass    
+
+
+    
+rule jaccard:
+    input:
+        gene_act_h5ad=os.path.join(config["dir_path"], '030results_cistopic/cell_gene04.h5ad'),
+    output:
+        png=os.path.join(config["dir_path"], 'exploratory/jaccard.png'),
+    shell:
+        """
+        /data/leuven/351/vsc35107/master_thesis/workflow_new/rules/jaccard.py -a {input.gene_act_h5ad} -o {output.png}
+        """
+
+#TODO
+rule plot_imputed_features_nicol_genes:
+    input:
+        gene_act_h5ad=os.path.join(config["dir_path"], '030results_cistopic/cell_gene04.h5ad'),
+        flag_file=os.path.join(config["dir_path"], '030results_cistopic/cell_gene03.h5ad'), # just to make sure select_features got run first
+        nicol_genes=config["nicol_genes"],
+        cistopic_obj=os.path.join(config['dir_path'], "030results_cistopic/cistopic_obj.pkl"),
+        gene_act=os.path.join(config['dir_path'], '030results_cistopic/gene_act.pkl'),
+    output:
+        flag='/lustre1/scratch/351/vsc35107/flags/plot_imputed_features_nicol_genes.done',
+    shell:
+        """
+        /data/leuven/351/vsc35107/master_thesis/workflow_new/rules/plot_imputed_features_nicol_genes.py \
+        -a {input.gene_act_h5ad} {input.nicol_genes} {input.cistopic_obj} {input.gene_act} \
+        -f /lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/10/exploratory
+
+        touch output.flag
+        """
+
+
+

@@ -1,0 +1,292 @@
+configfile: "/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/08_replicate/config.yaml"
+sample_names, = glob_wildcards("/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/000fragments/{name}.fragments.Mic.tsv.gz")
+# sample_names, = glob_wildcards("/lustre1/project/stg_00079/students/tingting/data/sun/PMI/000fragments/{name}.fragments.tsv.gz")
+import snapatac2 as snap
+import os
+import random
+import multiprocessing as mp
+
+rule all:
+    input:
+        AnnDataSet=os.path.join(config['work_dir'], "microglia.h5ads"),
+        adata=os.path.join(config['work_dir'], 'microglia.h5ad'),
+
+# Import data
+rule import_data:
+    input: 
+        # frags=os.path.join(config['synapse_dir'], "{name}.fragments.tsv.gz"),
+        frags=os.path.join(config['work_dir'], "000fragments/{name}.fragments.tsv.gz"),
+    output:
+        h5ad=os.path.join(config['work_dir'], "010h5ad/{name}.h5ad")
+    run:
+        snap.pp.import_data(
+            input.frags,
+            file=output.h5ad,
+            chrom_sizes=snap.genome.hg38,
+            min_num_fragments=config["min_num_fragments"],
+            sorted_by_barcode=False,)
+
+rule add_tsse:
+    input:
+        h5ad=os.path.join(config['work_dir'], "010h5ad/{name}.h5ad"),
+    output:
+        tsse_h5ad=os.path.join(config['work_dir'], "011h5ad_tsse/{name}.h5ad"),
+        png_frag=os.path.join(config['work_dir'], "020QC/{name}.frag.png"),
+        png_tsse=os.path.join(config['work_dir'], "020QC/{name}.tsse.png")
+    run:
+        # import snapatac2 as snap
+        adata=snap.read(input.h5ad, backed="r", backend=None)
+        adata_copy = adata.copy(filename=output.tsse_h5ad, backend=None)
+        adata.close()
+        snap.metrics.tsse(adata_copy, snap.genome.hg38, n_jobs=mp.cpu_count() - 2)
+        snap.pl.frag_size_distr(adata_copy, show=False, out_file=output.png_frag)
+        snap.pl.tsse(adata_copy, show=False, out_file=output.png_tsse)
+        print(adata_copy)
+        adata_copy.close()
+
+
+rule filter_tsse:
+    input:
+        adatas=os.path.join(config['work_dir'],"011h5ad_tsse/{name}.h5ad"),
+    output:
+        processed_adatas=os.path.join(config['work_dir'],"012h5ad_processed_tsse/{name}.h5ad")
+    run:
+        adata=snap.read(input.adatas, backed='r', backend='hdf5')
+        adata_copy = adata.copy(filename=output.processed_adatas, backend=None)
+        adata.close()
+        snap.pp.filter_cells(adata_copy, min_tsse=config["min_tsse"], n_jobs=mp.cpu_count() - 2)
+        print(adata_copy)
+        adata_copy.close()
+
+rule tile_qc:
+    input:
+        adatas=os.path.join(config['work_dir'],"012h5ad_processed_tsse/{name}.h5ad"),
+    output:
+        processed_adatas=os.path.join(config['work_dir'],"013h5ad_processed_tile/{name}.h5ad")
+    run:
+        adata=snap.read(input.adatas, backed='r', backend='hdf5')
+        adata_copy = adata.copy(filename=output.processed_adatas, backend=None)
+        adata.close()
+        snap.pp.add_tile_matrix(adata_copy, bin_size=config["bin_size"], n_jobs=mp.cpu_count() - 2)
+        adata_copy.close()
+
+rule features_qc:
+    input:
+        adatas=os.path.join(config['work_dir'],"013h5ad_processed_tile/{name}.h5ad"),
+    output:
+        processed_adatas=os.path.join(config['work_dir'],"014h5ad_processed_features/{name}.h5ad")
+    run:
+        adata=snap.read(input.adatas, backed='r', backend='hdf5')
+        adata_copy = adata.copy(filename=output.processed_adatas, backend=None)
+        adata.close()
+        snap.pp.select_features(adata_copy, filter_lower_quantile=0.005, filter_upper_quantile=0.005, n_features=100000000, n_jobs=mp.cpu_count() - 2)
+        # snap.pp.select_features(adata_copy, n_features=50000)
+        snap.pp.scrublet(adata_copy)
+        snap.pp.filter_doublets(adata_copy)
+        adata_copy.close()
+
+rule convert_anndataset:
+    input: 
+        processed_adatas=expand(os.path.join(config['work_dir'],"014h5ad_processed_features/{name}.h5ad"), name=sample_names),
+    output:
+        AnnDataSet=os.path.join(config['work_dir'], "microglia.h5ads"),
+        flag=os.path.join(config['tmp_dir'], 'flags/convert_anndataset.done')
+    params:
+        meta=config["meta_file"]   
+    run:
+        import numpy as np
+        import pandas as pd
+        
+        filtered_adatas=[]
+        for name, file in zip(sample_names, input.processed_adatas):
+            # print(name)
+            adata=snap.read(file, backed="r", backend=None)
+            filtered_adatas.append((name, adata))
+        # print(sample_names)
+        # print(filtered_adatas)
+        dat=snap.AnnDataSet(
+            adatas=filtered_adatas,
+            filename=output.AnnDataSet
+        )
+        print(f'Number of cells: {dat.n_obs}')
+        print(f'Number of unique barcodes: {np.unique(dat.obs_names).size}')
+
+        unique_cell_ids = [sa + ':' + bc for sa, bc in zip(dat.obs['sample'], dat.obs_names)]
+        dat.obs_names = unique_cell_ids
+        assert dat.n_obs == np.unique(dat.obs_names).size
+
+        # add metadata
+        sheet_names = pd.ExcelFile(params.meta).sheet_names
+        df = pd.read_excel(params.meta, sheet_names[1])
+        subject_ad=df.set_index("subject")["ADdiag2types"].to_dict()
+        df=pd.read_excel(params.meta, sheet_names[7])
+
+        # sampleID to subject dictionary
+        sampID_subject=df.set_index("SampID")["subject"].to_dict()
+
+        # sampleID to region dictionary
+        sampID_region=df.set_index("SampID")["region"].to_dict()
+
+        # sampleID to ad status dictionary
+        sampID_ad = {samp_id: subject_ad[subject] for samp_id, subject in sampID_subject.items() if subject in subject_ad}
+
+        dat.obs['region'] = dat.obs['sample'].replace(sampID_region)
+        dat.obs['subject']=dat.obs['sample'].replace(sampID_subject)
+        dat.obs['ad']=dat.obs['sample'].replace(sampID_ad)
+
+        dat.close()
+        with open(output.flag, 'w') as f:
+            pass  
+
+def generate_output_paths(stages, aspects, prefix=os.path.join(config['work_dir'], "020QC/umap")):
+    output_paths = {}
+    for stage in stages:
+        for aspect in aspects:
+            key = f"png_{stage}_{aspect}"
+            path = f"{prefix}.{stage}.{aspect}.png"
+            output_paths[key] = path
+    return output_paths  
+rule batch_QC:
+    input: 
+        dataset=os.path.join(config['work_dir'], "microglia.h5ads"),
+        flag=os.path.join(config['tmp_dir'], 'flags/convert_anndataset.done')
+    output:
+        png_eigenvalue=os.path.join(config['work_dir'], "020QC/eigenvalues.png"),
+        **generate_output_paths(["bfr", "aft"], ["sample", "region", "ad2", "subject"]),
+        flag=os.path.join(config['tmp_dir'], 'flags/batch_qc.done')
+    params:
+        blacklist=config["path_to_blacklist"],
+        n_features=config["n_features"],
+        max_iter=config["max_iter"],
+        n_iter=config["n_iter"]
+    # threads: 1
+    run:
+        dat=snap.read_dataset(input.dataset)
+
+        # select features
+        snap.pp.select_features(dat, n_features=params.n_features, blacklist= params.blacklist,  # variance and openness are the `same` (binary matrix, lower than 0.5)
+            max_iter=params.max_iter, inplace=True, n_jobs=mp.cpu_count() - 2)
+
+        # snap.pp.select_features(dat, filter_lower_quantile=0.005, filter_upper_quantile=0.005, n_features=100000000, blacklist= params.blacklist,  # variance and openness are the `same` (binary matrix, lower than 0.5)
+        #     max_iter=params.max_iter, inplace=True, n_jobs=mp.cpu_count() - 2)
+            
+        # dr with laplacian eigenmaps
+        snap.tl.spectral(dat, features='selected', 
+                random_state=0, sample_size=None, 
+                sample_method='random', chunk_size=20000, 
+                distance_metric='cosine', 
+                weighted_by_sd=True, feature_weights=None, inplace=True)      
+
+        snap.pl.spectral_eigenvalues(dat, width=600, height=400, show=True, interactive=False, out_file=output.png_eigenvalue)
+        snap.tl.umap(dat, n_comps=2, use_dims=None, use_rep='X_spectral', key_added='umap', random_state=0, inplace=True)
+        snap.pl.umap(dat, color="sample", use_rep='X_umap', marker_size=None, marker_opacity=1, sample_size=None, out_file=output['png_bfr_sample'])
+        snap.pl.umap(dat, color="region", use_rep='X_umap', marker_size=None, marker_opacity=1, sample_size=None, out_file=output['png_bfr_region'])
+        snap.pl.umap(dat, color="ad2", use_rep='X_umap', marker_size=None, marker_opacity=1, sample_size=None, out_file=output['png_bfr_ad'])
+        snap.pl.umap(dat, color="subject", use_rep='X_umap', marker_size=None, marker_opacity=1, sample_size=None, out_file=output['png_bfr_subject'])
+        
+        # batch correction
+        """
+        One sample from one individual one region
+        if corrected for smaple, then the region is also corrected, I suppose the individual level is also corrected
+        """
+        snap.pp.mnc_correct(dat, batch="sample", n_neighbors=5, n_clusters=40, 
+            n_iter=params.n_iter, use_rep='X_spectral', 
+            use_dims=None, groupby='ad2', 
+            key_added="X_spectral_mnc_sample_region", inplace=True)
+        # snap.pp.mnc_correct(dat, batch="region", n_neighbors=5, n_clusters=40, 
+        #     n_iter=params.n_iter, use_rep='X_spectral_mnc_sample', 
+        #     use_dims=None, groupby='ad2', key_added="X_spectral_mnc_sample_region", inplace=True)
+        snap.tl.umap(dat, n_comps=2, use_dims=None, use_rep="X_spectral_mnc_sample_region", key_added="umap_mnc_sample_region", random_state=0, inplace=True)
+
+        snap.pl.umap(dat, color="sample", use_rep="X_umap_mnc_sample_region", 
+            marker_size=None, marker_opacity=1, sample_size=None, 
+            out_file=output['png_aft_sample'])
+        snap.pl.umap(dat, color="region", use_rep="X_umap_mnc_sample_region", 
+            marker_size=None, marker_opacity=1, sample_size=None, 
+            out_file=output['png_aft_region'])
+        snap.pl.umap(dat, color="ad2", use_rep="X_umap_mnc_sample_region", 
+            marker_size=None, marker_opacity=1, sample_size=None, 
+            out_file=output['png_aft_ad'])
+        snap.pl.umap(dat, color="subject", use_rep="X_umap_mnc_sample_region", 
+            marker_size=None, marker_opacity=1, sample_size=None, 
+            out_file=output['png_aft_subject'])
+
+        snap.pp.knn(dat, n_neighbors=50, use_dims=None, use_rep='X_spectral_mnc_sample_region', method='kdtree', inplace=True, random_state=0)
+
+        with open(output.flag, 'w') as f:
+            pass        
+        dat.close()
+
+rule clustering:
+    input: 
+        anndata=os.path.join(config['work_dir'], "microglia.h5ads"),
+        flag=os.path.join(config['tmp_dir'], 'flags/batch_qc.done'),
+    output:
+        clustering_mnc=expand(os.path.join(config['work_dir'], "030cluster/mnc_leiden_{resolution}.png"), resolution=config['resolutions']),
+        flag=os.path.join(config['tmp_dir'], 'flags/clustering.done')
+    params:
+        resolutions=config['resolutions']
+    run:
+        adata=snap.read_dataset(input.anndata)
+        print(adata)
+        # resolution=float(params.resolution)
+        # print(resolution)
+        for i, resolution in enumerate(params.resolutions):
+        # clustering mnc       
+            snap.tl.leiden(
+                adata, 
+                resolution=resolution,
+                objective_function="modularity",
+                min_cluster_size=3,
+                n_iterations=-1,
+                random_state=0,
+                key_added=f"leiden_mnc_{resolution}",
+                use_leidenalg=False,
+                inplace=True
+            )
+            output_file_path=output.clustering_mnc[i]
+            snap.pl.umap(adata, color=f"leiden_mnc_{resolution}", 
+                use_rep='X_umap_mnc_sample_region', 
+                marker_size=None, marker_opacity=1, 
+                sample_size=None, out_file=output_file_path)
+
+        with open(output.flag, 'w') as f:
+            pass
+        adata.close()
+
+rule convert_to_adata:
+    input:  
+        anndata=os.path.join(config['work_dir'], "microglia.h5ads"),
+        flag=os.path.join(config['tmp_dir'], 'flags/clustering.done')
+    output:
+        adata=os.path.join(config['work_dir'], "microglia.h5ad")
+    run:
+        dat=snap.read_dataset(input.anndata)
+        dat.obsm['fragment_paired'] = dat.adatas.obsm['fragment_paired']
+        adat=dat.to_adata()
+        dat.close()      
+        adat.write_h5ad(output.adata, compression="gzip")
+
+
+
+
+
+        
+        
+        
+
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+

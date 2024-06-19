@@ -1,0 +1,48 @@
+configfile: "/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/workflow_new/config.yaml"
+import os
+
+rule all:
+    input:
+        consensus_fasta=os.path.join(config['dir_path'], '030results_cistopic/060cistarget/consensus_regions.with_1kb_bg_padding.fa'),
+        flag=os.path.join(config['tmp_dir'], 'flags/create_cistarget_database.done'),
+
+rule consensus_fasta:
+    input:
+        consensus_region=os.path.join(config['dir_path'], '030results_cistopic/010consensus_peak_calling/consensus_regions.bed'),
+    output:
+        consensus_fasta=os.path.join(config['dir_path'], '030results_cistopic/060cistarget/consensus_regions.with_1kb_bg_padding.fa'),
+    shell:
+        """
+        mkdir -p $(dirname {output.consensus_fasta})
+        {config[SCRIPT_DIR]}/create_fasta_with_padded_bg_from_bed.sh \
+        {config[human_fasta]} \
+        {config[chrom_sizes]} \
+        {input.consensus_region} \
+        {output.consensus_fasta} \
+        1000 \
+        yes
+        """
+
+rule create_cistarget_database:
+    input:
+        consensus_fasta=os.path.join(config['dir_path'], '030results_cistopic/060cistarget/consensus_regions.with_1kb_bg_padding.fa'),
+    output:
+        flag=os.path.join(config['tmp_dir'], 'flags/create_cistarget_database.done'),
+    shell:
+        """
+        touch {output.flag}
+        {config[SCRIPT_DIR]}/create_cistarget_motif_databases.py \
+        -f {input.consensus_fasta} \
+        -M {config[CBDIR]} \
+        -m {config[MOTIF_LIST]} \
+        -o {config[DATABASE_PREFIX]} \
+        -c {config[cbust]} \
+        --bgpadding 1000 \
+        -t 20
+        """
+
+
+
+import shutil
+onsuccess:
+    shutil.rmtree(".snakemake")

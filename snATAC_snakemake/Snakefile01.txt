@@ -1,0 +1,202 @@
+# configfile: "/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/snap2_pipeline/config.yaml"
+configfile: "/lustre1/project/stg_00079/students/tingting/data/sun/pmi/config.yaml"
+
+"""
+this snakefile aims to create cistopic object and add metadata to it
+"""
+import os
+import pycisTopic
+import numpy as np
+import anndata
+import pyranges as pr
+import requests
+import pandas as pd
+import pickle
+from pycisTopic.pseudobulk_peak_calling import export_pseudobulk
+from pycisTopic.pseudobulk_peak_calling import peak_calling
+from pycisTopic.iterative_peak_calling import *
+import pybiomart as pbm
+from pycisTopic.qc import *
+import polars as pl
+from pycisTopic.cistopic_class import create_cistopic_object
+from pycisTopic.cistopic_class import *
+
+chromsizes=pd.read_csv(config["target_url"], sep='\t', header=None)
+chromsizes.columns=['Chromosome', 'End']
+chromsizes['Start']=[0]*chromsizes.shape[0]
+chromsizes=chromsizes.loc[:,['Chromosome', 'Start', 'End']]
+# Exceptionally in this case, to agree with CellRangerARC annotations
+chromsizes['Chromosome'] = [chromsizes['Chromosome'][x].replace('v', '.') for x in range(len(chromsizes['Chromosome']))]
+chromsizes['Chromosome'] = [chromsizes['Chromosome'][x].split('_')[1] if len(chromsizes['Chromosome'][x].split('_')) > 1 else chromsizes['Chromosome'][x] for x in range(len(chromsizes['Chromosome']))]
+chromsizes=pr.PyRanges(chromsizes)
+
+rule all:
+    input:
+        consensus_regions=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/consensus_regions.bed"),
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+        flag=os.path.join(config['tmp_dir'], 'flags/add_snap_umap.done')
+
+rule peak_calling:
+    input:
+        bed_paths_pkl=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bed_paths2.pkl"),
+    output:
+        narrow_peaks_pkl=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/MACS/narrow_peaks_dict.pkl")
+    run:
+        bed_paths=pickle.load(open(input.bed_paths_pkl, 'rb'))
+        narrow_peaks_dict = peak_calling(config['macs_path'],
+                                        bed_paths,
+                                        os.path.join(config['work_dir'], config['macs_file']),
+                                        genome_size='hs',
+                                        n_cpu=1,
+                                        input_format='BEDPE',
+                                        shift=73,
+                                        ext_size=146,
+                                        keep_dup = 'all', # Whether to keep duplicate tags at te exact same location.
+                                        q_value = 0.05,
+                                        _temp_dir = os.path.join(config["tmp_dir"], 'ray_spill')
+                                        )     
+        print(narrow_peaks_dict)
+        pickle.dump(narrow_peaks_dict, open(output.narrow_peaks_pkl, 'wb'))
+
+rule get_consensus_peaks:
+    input:
+        narrow_peaks_pkl=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/MACS/narrow_peaks_dict.pkl"),
+    output:
+        consensus_regions=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/consensus_regions.bed")
+    run:
+        narrow_peaks_dict=pickle.load(open(input.narrow_peaks_pkl, 'rb'))
+        print("-------narrow-peaks-dict--------")
+        print(narrow_peaks_dict)
+        consensus_peaks=get_consensus_peaks(narrow_peaks_dict, config['peak_half_width'], chromsizes=chromsizes, path_to_blacklist=config['path_to_blacklist'])
+
+        print("-------consensus-peaks--------")
+        print(consensus_peaks)
+
+        consensus_peaks.to_bed(
+            path = output.consensus_regions,
+            keep=True,
+            compression='infer',
+            chain=False)       
+
+"""
+consensus regions + filtered nuclei from snapATAC to create cisTopic object
+"""
+rule create_cisobject:
+    input:
+        frag_paths_pkl=os.path.join(config['work_dir'], "030results_cistopic/frag_paths.pkl"),
+        tsv=os.path.join(config['work_dir'], "030results_cistopic/cell_data.tsv"),
+        consensus_regions=os.path.join(config['work_dir'], "030results_cistopic/010consensus_peak_calling/consensus_regions.bed")
+    output:
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl")
+    run:
+        cell_data = pd.read_csv(input.tsv, sep = '\t')
+        sample_to_barcodes = cell_data.groupby('sample')['barcode'].agg(list).to_dict()
+        print(sample_to_barcodes)
+        # cell_data['barcode'] = cell_data['sample']+':'+ cell_data['barcode'] 
+        fragments_dict=pickle.load(open(input.frag_paths_pkl, 'rb'))
+        unique_samples = set(cell_data['sample'])
+        path_to_regions= {sample: input.consensus_regions for sample in unique_samples} 
+        cistopic_obj_list=[create_cistopic_object_from_fragments(path_to_fragments=fragments_dict[key],
+                                                    path_to_regions=path_to_regions[key],
+                                                    path_to_blacklist=config['path_to_blacklist'],
+                                                    # metrics=metadata_bc[key],
+                                                    valid_bc=sample_to_barcodes[key],
+                                                    n_cpu=8,
+                                                    # split_pattern= ":",
+                                                    project=key) for key in sample_to_barcodes.keys()]   
+        print(cistopic_obj_list)  
+        cistopic_obj = merge(cistopic_obj_list)
+        print(cistopic_obj.cell_data)
+        pickle.dump(cistopic_obj,
+                    open(output.obj_pkl, 'wb'))     
+
+"""
+add cell type (here is the one that predicted from snapATAC2)
+
+For PMI, metadata PMI will also be added
+"""
+rule add_metadata:
+    input:
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+        tsv=os.path.join(config['work_dir'], "030results_cistopic/cell_data.tsv"),
+    output:
+        flag=os.path.join(config["tmp_dir"], 'flags/add_metadata.done')
+    run:
+        from pycisTopic.lda_models import evaluate_models
+        cell_data = pd.read_csv(input.tsv, sep = '\t')
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+
+        # add celltype metadata
+        cell_data['barcode'] = cell_data['barcode'] + '___' +cell_data['sample']
+        cell_data = cell_data.set_index('barcode')
+        print(set(cistopic_obj.cell_names) - set(cell_data.index))
+        cistopic_obj.add_cell_data(cell_data[['celltype']].astype(str))
+        cistopic_obj.add_cell_data(cell_data[['PMI']].astype(str))
+
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+        with open(output.flag, 'w') as f:
+            pass       
+
+
+rule add_snap_umap:
+    input: 
+        obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+        snap_umap=os.path.join(config['work_dir'], '030results_cistopic/snap_umap.pkl'),
+        flag=os.path.join(config['tmp_dir'], 'flags/add_metadata.done'),
+    output:
+        flag=os.path.join(config['tmp_dir'], 'flags/add_snap_umap.done')
+    run:
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        umap_data = pickle.load(open(input.snap_umap, 'rb'))
+        
+        cistopic_obj.projections['cell']['SNAP']=umap_data
+        print(cistopic_obj.projections['cell'])
+
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+
+        with open(output.flag, 'w') as f:
+            pass  
+
+
+
+
+"""
+run once in dir7 and directly used the results from dir7 afterwards
+"""
+# rule get_tss:
+#     input:
+#         flag='/lustre1/scratch/351/vsc35107/flags/plot_features.done',
+#     output:
+#         tss='030results_cistopic/tss.bed'
+#     shell:
+#         """
+#         pycistopic tss get_tss \
+#             --output {output.tss} \
+#             --name "hsapiens_gene_ensembl" \
+#             --to-chrom-source ucsc \
+#             --ucsc hg38  
+#         """
+
+# rule pr_annot:
+#     input:
+#         tss='030results_cistopic/tss.bed',
+#     output:
+#         pr_annotation_pkl='030results_cistopic/pr_annotation.pkl'
+#     run:
+#         import pandas as pd
+#         pr_annotation = pd.read_table(
+#                 input.tss
+#             ).rename(
+#                 {"Name": "Gene", "# Chromosome": "Chromosome"}, axis = 1)    
+#         pr_annotation["Transcription_Start_Site"] = pr_annotation["Start"]
+#         pr_annotation = pr.PyRanges(pr_annotation)
+#         print(pr_annotation)
+
+#         pickle.dump(pr_annotation,
+#             open(output.pr_annotation_pkl, 'wb'))  
+
+# import shutil
+# onsuccess:
+#     shutil.rmtree(".snakemake")

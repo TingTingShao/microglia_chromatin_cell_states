@@ -1,0 +1,283 @@
+configfile: "/data/leuven/351/vsc35107/lustre1_stt/data/sun/snap2_allfragments/10/config.yaml"
+# configfile: "/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/workflow_new/config.yaml"
+
+import os
+import pycisTopic
+import numpy as np
+import anndata
+import pyranges as pr
+import requests
+import pandas as pd
+import pickle
+from pycisTopic.pseudobulk_peak_calling import export_pseudobulk
+from pycisTopic.pseudobulk_peak_calling import peak_calling
+from pycisTopic.iterative_peak_calling import *
+import pybiomart as pbm
+from pycisTopic.qc import *
+import polars as pl
+from pycisTopic.cistopic_class import create_cistopic_object
+from pycisTopic.cistopic_class import *
+
+rule all:
+    input:
+        DAG_markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/DAG_markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+        png_imputed_features=os.path.join(config["work_dir"], f'030results_cistopic/040dars/imputed_features_{config["snakefile03"]["reduction_name"]}.png'),
+        # umap=os.path.join(config['work_dir'], f'030results_cistopic/030visual/umap_{config["snakefile03"]["reduction_name"]}.png'),
+        # topic=os.path.join(config['work_dir'], f'030results_cistopic/030visual/topics_{config["snakefile03"]["reduction_name"]}.png'),
+        topic_annot=os.path.join(config["work_dir"], f'030results_cistopic/topic_annot_{config["snakefile03"]["variable"]}.pkl'),
+        markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+        flag=os.path.join(config['tmp_dir'], 'flags/region_sets.done'),
+
+# rule pycistopic_visual:
+#     input:
+#         obj_pkl=os.path.join(config['work_dir'], "030results_cistopic/cistopic_obj.pkl"),
+#     output:
+#         umap=os.path.join(config['work_dir'], f'030results_cistopic/030visual/umap_{config["snakefile03"]["reduction_name"]}.png'),
+#         topic = os.path.join(config['work_dir'], f'030results_cistopic/030visual/topics_{config["snakefile03"]["reduction_name"]}.png'),
+#         # flag=os.path.join(config['tmp_dir'], 'flags/pycistopic_visual.done'),
+#     run:
+#         from pycisTopic.clust_vis import (
+#             find_clusters,
+#             run_umap,
+#             run_tsne,
+#             plot_metadata,
+#             plot_topic,
+#             cell_topic_heatmap
+#         )
+#         import pickle
+
+#         cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+
+#         color_dict = {
+#             '0': '#9A031E',
+#             '1': '#C75146',
+#             '2': '#FFA987',
+#             '3': '#222E50',
+#             '4': '#8BB174',
+#             '5': '#2A4849',
+#             '6': '#626868',
+#             '7': '#3E5641',
+#             '8': '#59A96A',
+#         }
+#         # run_umap(cistopic_obj, target = 'cell', scale = True)
+
+#         plot_metadata(
+#             cistopic_obj,
+#             reduction_name = config['snakefile03']['reduction_name'],
+#             color_dictionary = {config['snakefile03']['variable']: color_dict},
+#             variables = [config['snakefile03']['variable']],
+#             remove_nan=True,
+#             show_label=True,
+#             show_legend=True,
+#             figsize = (10, 10),
+#             save=output.umap
+#             )
+#         plot_topic(
+#             cistopic_obj,
+#             reduction_name = config['snakefile03']['reduction_name'],
+#             target = 'cell',
+#             num_columns=5,
+#             save=output.topic
+#         )
+
+#         pickle.dump(cistopic_obj,
+#             open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+
+        # with open(output.flag, 'w') as f:
+        #     pass    
+
+rule topic_annot:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        binarized_cell_topic=os.path.join(config["work_dir"], '030results_cistopic/030visual/binarized_cell_topic.pkl'),
+        # flag=os.path.join(config['tmp_dir'], 'flags/pycistopic_visual.done'),
+    output:
+        topic_annot=os.path.join(config["work_dir"], f'030results_cistopic/topic_annot_{config["snakefile03"]["variable"]}.pkl'),
+        # flag=os.path.join(config['tmp_dir'], 'flags/topic_annot.done'),
+    run:
+        from pycisTopic.topic_qc import topic_annotation
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        binarized_cell_topic = pickle.load(open(input.binarized_cell_topic, 'rb'))
+
+        topic_annot = topic_annotation(
+            cistopic_obj,
+            annot_var=config['snakefile03']['variable'],
+            binarized_cell_topic=binarized_cell_topic,
+            general_topic_thr = 0.2)
+
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))
+        pickle.dump(topic_annot,
+            open(output.topic_annot, 'wb')) 
+
+        # with open(output.flag, 'w') as f:
+        #     pass   
+
+rule find_diff_region:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        variable_regions_pkl=os.path.join(config["work_dir"], '030results_cistopic/040dars/variable_regions.pkl'),
+        imputed_acc_obj=os.path.join(config["work_dir"], '030results_cistopic/040dars/imputed_acc_obj.pkl'),
+    output:
+        markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/markers_dict_{config["snakefile03"]["variable"]}.pkl')
+    run:
+        from pycisTopic.diff_features import find_diff_features
+        import numpy as np
+        import pickle
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        imputed_acc_obj=pickle.load(open(input.imputed_acc_obj, 'rb'))
+        variable_regions=pickle.load(open(input.variable_regions_pkl, 'rb'))
+
+        print(cistopic_obj.cell_data)
+
+        markers_dict= find_diff_features(
+            cistopic_obj,
+            imputed_acc_obj,
+            variable=config['snakefile03']['variable'],
+            var_features=variable_regions,
+            contrasts=None,
+            # contrasts=contrast,
+            adjpval_thr=0.05,
+            log2fc_thr=np.log2(1.5),
+            n_cpu=5,
+            _temp_dir=os.path.join(config["tmp_dir"], 'ray_spill'),
+            split_pattern = '___'
+        )
+        print("Number of DARs found:")
+        print("---------------------")
+        for x in markers_dict:
+            print(f"  {x}: {len(markers_dict[x])}")
+
+        pickle.dump(markers_dict,
+            open(output.markers_dict_pkl, 'wb')) 
+
+rule plot_region_features:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        imputed_acc_obj=os.path.join(config["work_dir"], '030results_cistopic/040dars/imputed_acc_obj.pkl'),
+        markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+    output:
+        png_imputed_features=os.path.join(config["work_dir"], f'030results_cistopic/040dars/imputed_features_{config["snakefile03"]["reduction_name"]}.png'),
+        # flag=os.path.join(config['tmp_dir'], 'flags/plot_features.done')
+    run:
+        from pycisTopic.clust_vis import plot_imputed_features
+        import pickle
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        imputed_acc_obj=pickle.load(open(input.imputed_acc_obj, 'rb'))
+        markers_dict=pickle.load(open(input.markers_dict_pkl, 'rb'))
+        print(markers_dict.keys())
+
+        empty_keys=[k for k, v in markers_dict.items() if v.empty]
+        cell_types=set(markers_dict.keys())-set(empty_keys)
+        print(cell_types)
+        plot_imputed_features( 
+            cistopic_obj,
+            reduction_name=config['snakefile03']['reduction_name'],
+            imputed_data=imputed_acc_obj,
+            features=[markers_dict[x].index.tolist()[0] for x in cell_types], 
+            scale=False,
+            num_columns=3,
+            save=output.png_imputed_features)
+   
+        # with open(output.flag, 'w') as f:
+        #     pass
+
+"""
+differential gene features
+"""
+rule find_diff_genes:
+    input:
+        obj_pkl=os.path.join(config["work_dir"], "030results_cistopic/cistopic_obj.pkl"),
+        gene_act_pkl=os.path.join(config["work_dir"], '030results_cistopic/gene_act.pkl'), 
+    output:
+        DAG_markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/DAG_markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+        # flag=os.path.join(config['tmp_dir'], 'flags/DAGs.done')
+    run:
+        from pycisTopic.diff_features import find_diff_features
+
+        cistopic_obj = pickle.load(open(input.obj_pkl, 'rb'))
+        gene_act=pickle.load(open(input.gene_act_pkl, 'rb'))
+
+        DAG_markers_dict= find_diff_features(
+            cistopic_obj,
+            gene_act,
+            variable=config['snakefile03']['variable'],
+            var_features=None,
+            contrasts=None,
+            adjpval_thr=0.05, # 1
+            log2fc_thr=np.log2(1.5), # -10
+            n_cpu=5,
+            _temp_dir=os.path.join(config["tmp_dir"], 'ray_spill'),
+            split_pattern = '___')
+        
+        print(DAG_markers_dict)
+
+        pickle.dump(DAG_markers_dict,
+            open(output.DAG_markers_dict_pkl, 'wb'))  
+        pickle.dump(cistopic_obj,
+            open(os.path.join(config["work_dir"], '030results_cistopic/cistopic_obj.pkl'), 'wb'))          
+        # with open(output.flag, 'w') as f:
+        #     pass
+
+rule region_sets:
+    input:
+        region_bin_topics_otsu=os.path.join(config["work_dir"], '030results_cistopic/030visual/region_bin_topics_otsu.pkl'),
+        region_bin_topics_top_3k=os.path.join(config["work_dir"], '030results_cistopic/030visual/region_bin_topics_top_3k.pkl'),
+        markers_dict_pkl=os.path.join(config["work_dir"], f'030results_cistopic/040dars/markers_dict_{config["snakefile03"]["variable"]}.pkl'),
+        # flag=os.path.join(config['tmp_dir'], 'flags/DAGs.done'),
+    output:
+        flag=os.path.join(config['tmp_dir'], 'flags/region_sets.done'),
+    run:
+        import pickle
+        import pyranges as pr
+        from pycistarget.utils import region_names_to_coordinates
+        import os
+
+        region_bin_topics_otsu = pickle.load(open(input.region_bin_topics_otsu, 'rb'))
+        region_bin_topics_top3k = pickle.load(open(input.region_bin_topics_top_3k, 'rb'))
+        markers_dict = pickle.load(open(input.markers_dict_pkl, 'rb'))
+
+        os.makedirs(os.path.join(config['work_dir'], config['region_dir'], {config["snakefile03"]["variable"]}, "Topics_otsu"), exist_ok = True)
+        os.makedirs(os.path.join(config['work_dir'], config['region_dir'], {config["snakefile03"]["variable"]}, "Topics_top_3k"), exist_ok = True)
+        os.makedirs(os.path.join(config['work_dir'], config['region_dir'], {config["snakefile03"]["variable"]}, "DARs_cell_type"), exist_ok = True)
+
+        for topic in region_bin_topics_otsu:
+            region_names_to_coordinates(
+                region_bin_topics_otsu[topic].index
+            ).sort_values(
+                ["Chromosome", "Start", "End"]
+            ).to_csv(
+                os.path.join(config['work_dir'], config['region_dir'], "Topics_otsu", f"{topic}.bed"),
+                sep = "\t",
+                header = False, index = False
+            )
+
+        for topic in region_bin_topics_top3k:
+            region_names_to_coordinates(
+                region_bin_topics_top3k[topic].index
+            ).sort_values(
+                ["Chromosome", "Start", "End"]
+            ).to_csv(
+                os.path.join(config['work_dir'], config['region_dir'], "Topics_top_3k", f"{topic}.bed"),
+                sep = "\t",
+                header = False, index = False
+            )
+
+        # remove keys with empty values
+        empty_keys=[k for k, v in markers_dict.items() if v.empty]
+        cell_types=set(markers_dict.keys())-set(empty_keys)
+        print(cell_types)
+        for cell_type in cell_types:
+            region_names_to_coordinates(
+                markers_dict[cell_type].index
+            ).sort_values(
+                ["Chromosome", "Start", "End"]
+            ).to_csv(
+                os.path.join(config['work_dir'], config['region_dir'], "DARs_cell_type", f"{cell_type}.bed"),
+                sep = "\t",
+                header = False, index = False
+            )
+        with open(output.flag, 'w') as f:
+            pass     
