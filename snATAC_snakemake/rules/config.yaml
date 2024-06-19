@@ -1,0 +1,53 @@
+tmp_dir: '/scratch/leuven/351/vsc35107/'
+work_dir: '/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/08_replicate'
+upstream_dir: '/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/08'
+
+target_url: 'http://hgdownload.cse.ucsc.edu/goldenPath/hg38/bigZips/hg38.chrom.sizes'
+bed_path: '030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bed'
+bigwig_path: '030results_cistopic/010consensus_peak_calling/pseudobulk_bed_files/bw'
+nicol_genes: '/lustre1/project/stg_00079/students/tingting/database/metadata/newnicomarkers.csv'
+
+synapse_dir: '/lustre1/project/stg_00079/students/tingting/data/sun/000fragments'
+dropbox_dir: '/lustre1/project/stg_00079/students/tingting/data/sun/000fragments_all'
+
+macs_path: '/vsc-hard-mounts/leuven-data/351/vsc35107/miniconda3/envs/scenicplus/bin/macs2'
+macs_file: '030results_cistopic/010consensus_peak_calling/MACS/macs2'
+peak_half_width: 250
+mallet: '/vsc-hard-mounts/leuven-data/351/vsc35107/master_thesis/Mallet/bin/mallet'
+pr_annotation: '/lustre1/project/stg_00079/students/tingting/data/sun/snap2_allfragments/10/030results_cistopic/pr_annotation.pkl'
+
+leiden_mnc_resolution: 'leiden_mnc_0.8' 
+resolution: 0.8
+
+option: False
+region_dir: '030results_cistopic/050region_sets'
+
+path_to_blacklist: '/lustre1/scratch/351/vsc35107/pbmc_tutorial/Blacklist/lists/hg38-blacklist.v2.bed.gz'
+meta_file: '/lustre1/project/stg_00079/students/tingting/data/sun/supplementary_data/SupplementalTables.combined.xlsx'
+
+human_fasta: '/lustre1/project/stg_00079/students/tingting/database/homo_sapiens/hg38_ucsc/fasta/hg38.fa'
+chrom_sizes: '/lustre1/project/stg_00079/students/tingting/database/homo_sapiens/hg38_ucsc/fasta/hg38.chrom.sizes'
+SCRIPT_DIR: '/vsc-hard-mounts/leuven-data/351/vsc35107/create_cisTarget_databases'
+
+CBDIR: '/lustre1/project/stg_00079/students/tingting/database/aertslab_motif_colleciton/v10nr_clust_public/singletons'
+MOTIF_LIST: '/lustre1/project/stg_00079/students/tingting/database/motifs.txt'
+
+#TODO
+DATABASE_PREFIX: '/lustre1/project/stg_00079/students/tingting/database/10/10x_microglia_1kb_bg_with_mask'
+cbust: '/lustre1/project/stg_00079/students/tingting/database/cbust'
+
+
+min_tsse: 5
+bin_size: 500
+
+n_features: 500000 # 5000000 pycistopic rule variable_regions Unable to allocate 105. GiB for an array with shape (324780, 43413) and data type float64
+max_iter: 1
+min_num_fragments: 1000
+resolutions: [0.3, 0.5, 0.8, 1, 1.3, 1.5, 1.8, 2]
+n_iter: 1
+
+
+snakefile03:
+  reduction_name: 'UMAP'
+  variable: 'pycisTopic_leiden_10_0.5'
+  
